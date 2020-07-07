@@ -16,20 +16,44 @@ class SocketWriter implements WriterInterface
      */
     public function write($exception, array $config)
     {
-        $socket = fsockopen(
-            $this->buildConnectionScheme($config),
-            $config['port'],
-            $errno,
-            $errstr,
-            $config['connect_timeout']
-        );
+        if (!$config['async']) {
+            $socket = fsockopen(
+                $this->buildConnectionScheme($config),
+                $config['port'],
+                $errno,
+                $errstr,
+                $config['connect_timeout']
+            );
 
-        if ($socket) {
-            stream_set_timeout($socket, $config['write_timeout']);
-            $payLoad = $this->buildPayload($exception, $config);
-            if (strlen($payLoad) > 7000 && $config['async']) {
-                $messageId = uniqid();
-                $chunks = str_split($payLoad, 7000);
+            if ($socket) {
+                stream_set_timeout($socket, $config['write_timeout']);
+                $payLoad = $this->buildPayload($exception, $config);
+                fwrite($socket, $payLoad);
+                fclose($socket);
+            }
+        } else {
+            $socket = socket_create(AF_INET, SOCK_DGRAM, SOL_UDP);
+
+            if ($socket) {
+                socket_set_option($socket, SOL_SOCKET, SO_REUSEADDR, true);
+                socket_set_option($socket, SOL_SOCKET, SO_REUSEPORT, true);
+                socket_set_option($socket, SOL_SOCKET, SO_SNDBUF, 50000);
+                $sto_s = floor($config['write_timeout']);
+                $sto_us = ($config['write_timeout'] - $sto_s) * 1000000;
+                socket_set_option($socket, SOL_SOCKET, SO_SNDTIMEO, ["sec" => $sto_s, "usec" => $sto_us]);
+
+                $payLoad = $this->buildPayload($exception, $config);
+
+                // estimate the escaped payload size
+                $payLoad_length = strlen($payLoad);
+                $json_encoded_payload_length = strlen(json_encode($payLoad));
+                $escaping_ratio = $json_encoded_payload_length * 1.05 / $payLoad_length;
+
+                // generate a unique id for reassembly
+                $messageId = sha1(uniqid('errbit-', true));
+
+                $mtu = array_key_exists('mtu', $config) ? $config['mtu'] : 7000;
+                $chunks = str_split($payLoad, floor($mtu / $escaping_ratio));
                 foreach ($chunks as $idx => $chunk) {
                     $packet = array(
                         "messageid" => $messageId,
@@ -39,12 +63,10 @@ class SocketWriter implements WriterInterface
                         $packet['last'] = true;
                     }
                     $fragment = json_encode($packet);
-                    fwrite($socket, $fragment);
+                    socket_sendto($socket, $fragment, strlen($fragment), 0, $config['host'], $config['port']);
                 }
-            } else {
-                fwrite($socket, $payLoad);
+                socket_close($socket);
             }
-            fclose($socket);
         }
     }
 
