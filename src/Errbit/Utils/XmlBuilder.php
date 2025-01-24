@@ -31,6 +31,8 @@ namespace Errbit\Utils;
  */
 class XmlBuilder
 {
+    protected ?\SimpleXMLElement $_xml;
+    
     /**
      * Instantiate a new XmlBuilder.
      *
